@@ -605,9 +605,10 @@ async function geocodeProjectPlaces(project) {
 
 async function geocodePlace(query) {
   const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=5&countrycodes=de&q=${encodeURIComponent(query)}`;
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
-  if (!response.ok) throw new Error(`Ort konnte nicht gefunden werden: ${query}`);
-  const results = await response.json();
+  const results = await fetchJson(url, {
+    serviceName: "OpenStreetMap-Ortssuche",
+    headers: { Accept: "application/json" }
+  });
   if (!results.length) throw new Error(`Ort konnte nicht gefunden werden: ${query}`);
   const result = pickBestPlaceResult(results, query);
   if (!result) {
@@ -626,9 +627,7 @@ async function fetchRoute(places, mode) {
     ? "https://routing.openstreetmap.de/routed-bike/route/v1/bike"
     : "https://router.project-osrm.org/route/v1/driving";
   const url = `${baseUrl}/${coordinates}?overview=full&geometries=geojson`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error("Route konnte nicht berechnet werden.");
-  const data = await response.json();
+  const data = await fetchJson(url, { serviceName: mode === "cycling" ? "Fahrrad-Routing" : "Auto-Routing" });
   if (data.code !== "Ok" || !data.routes?.length) throw new Error("Route konnte nicht berechnet werden.");
   const route = data.routes[0];
   return {
@@ -645,15 +644,14 @@ async function fetchLeadsAlongRoute(project, coordinates, terms) {
   const bbox = bufferedRouteBbox(coordinates, Math.max(radius, 5000));
   const queries = terms.map((term) => overpassBboxQuery(term, bbox));
   const body = `[out:json][timeout:35];(${queries.join("")});out tags center ${maxResults * 8};`;
-  const response = await fetch("https://overpass-api.de/api/interpreter", {
+  const data = await fetchJson("https://overpass-api.de/api/interpreter", {
+    serviceName: "OpenStreetMap-Lead-Suche",
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
     },
     body: new URLSearchParams({ data: body })
   });
-  if (!response.ok) throw new Error("Die Lead-Suche ist gerade nicht erreichbar.");
-  const data = await response.json();
   const seen = new Set();
   const leads = [];
 
@@ -691,15 +689,14 @@ async function fetchLeadsAroundPoint(project, lat, lon, terms) {
   const maxResults = Number(project.maxResults) || 50;
   const queries = terms.map((term) => overpassAroundQuery(term, lat, lon, radius));
   const body = `[out:json][timeout:35];(${queries.join("")});out tags center ${maxResults * 8};`;
-  const response = await fetch("https://overpass-api.de/api/interpreter", {
+  const data = await fetchJson("https://overpass-api.de/api/interpreter", {
+    serviceName: "OpenStreetMap-Standortsuche",
     method: "POST",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
     },
     body: new URLSearchParams({ data: body })
   });
-  if (!response.ok) throw new Error("Die Standortsuche ist gerade nicht erreichbar.");
-  const data = await response.json();
   const seen = new Set();
   const leads = [];
 
@@ -800,9 +797,10 @@ async function addManualLead() {
 
 async function geocodeAny(query) {
   const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&countrycodes=de&q=${encodeURIComponent(query)}`;
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
-  if (!response.ok) throw new Error("Adresse konnte nicht gefunden werden.");
-  const results = await response.json();
+  const results = await fetchJson(url, {
+    serviceName: "OpenStreetMap-Adresssuche",
+    headers: { Accept: "application/json" }
+  });
   if (!results.length) throw new Error("Adresse konnte nicht gefunden werden.");
   const address = results[0].address || {};
   return {
@@ -1002,12 +1000,12 @@ async function checkLeadWebsite(leadId) {
 
   setStatus(`Webseite wird geprueft: ${item.name}`);
   try {
-    const response = await fetch("/api/check-website", {
+    const result = await fetchJson("/api/check-website", {
+      serviceName: "Websitepruefung",
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url: item.website })
     });
-    const result = await response.json();
     item.websiteScore = result.score || 0;
     item.websiteSummary = result.summary || "Keine Bewertung";
     item.websiteCheckedAt = new Date().toISOString();
@@ -1096,9 +1094,11 @@ function attachPlaceSuggestions(input, datalist, useLastSegment = false) {
 
 async function fetchPlaceSuggestions(query) {
   const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=6&countrycodes=de&q=${encodeURIComponent(query)}`;
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
-  if (!response.ok) return [];
-  const results = await response.json();
+  const results = await fetchJson(url, {
+    serviceName: "OpenStreetMap-Ortsvorschlaege",
+    headers: { Accept: "application/json" },
+    quiet: true
+  }).catch(() => []);
   return results
     .filter((item) => isLikelyRoutePlace(item) || query.trim().includes(" "))
     .map((item) => ({
@@ -1285,6 +1285,39 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value);
+}
+
+async function fetchJson(url, options = {}) {
+  const {
+    serviceName = "Dienst",
+    timeoutMs = 20000,
+    quiet = false,
+    ...fetchOptions
+  } = options;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...fetchOptions,
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      throw new Error(`${serviceName} antwortet mit HTTP ${response.status}.`);
+    }
+    return await response.json();
+  } catch (error) {
+    if (quiet) throw error;
+    if (error.name === "AbortError") {
+      throw new Error(`${serviceName} braucht zu lange. Bitte gleich nochmal versuchen.`);
+    }
+    if (String(error.message || "").includes("Failed to fetch")) {
+      throw new Error(`${serviceName} ist gerade nicht erreichbar. Pruefe Internet/VPN/Adblocker oder versuche es erneut.`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 render();
