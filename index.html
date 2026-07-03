@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Vertriebsapp</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">V</div>
+          <div>
+            <strong>Vertriebsapp</strong>
+            <span>Projektbasierte Leads</span>
+          </div>
+        </div>
+
+        <button class="primary-action" id="newProjectBtn" type="button">Neues Projekt</button>
+
+        <div class="project-list" id="projectList" aria-label="Projektliste"></div>
+      </aside>
+
+      <main class="workspace">
+        <section class="topbar">
+          <div>
+            <p class="eyebrow">Aktives Projekt</p>
+            <h1 id="projectTitle">Route Koeln nach Koblenz</h1>
+          </div>
+          <div class="topbar-actions">
+            <button class="ghost-button" id="exportCsvBtn" type="button">CSV exportieren</button>
+            <button class="ghost-button" id="saveProjectBtn" type="button">Speichern</button>
+          </div>
+        </section>
+
+        <section class="planner-grid">
+          <form class="panel route-panel" id="projectForm">
+            <div class="panel-header">
+              <h2>Route & Suche</h2>
+              <span id="leadCounter">0 Leads</span>
+            </div>
+
+            <label>
+              Projektname
+              <input id="nameInput" name="name" autocomplete="off">
+            </label>
+
+            <div class="split">
+              <label>
+                Start
+                <input id="startInput" name="start" autocomplete="off" list="startSuggestions">
+                <datalist id="startSuggestions"></datalist>
+              </label>
+              <label>
+                Ziel
+                <input id="endInput" name="end" autocomplete="off" list="endSuggestions">
+                <datalist id="endSuggestions"></datalist>
+              </label>
+            </div>
+
+            <label>
+              Orte entlang der Strecke
+              <input id="stopsInput" name="stops" autocomplete="off" placeholder="z. B. Bonn, Remagen, Bingen" list="stopSuggestions">
+              <datalist id="stopSuggestions"></datalist>
+            </label>
+
+            <label>
+              Suchbegriffe
+              <input id="searchTermsInput" name="searchTerms" autocomplete="off" placeholder="z. B. Minigolf, Camping, Hotel">
+            </label>
+
+            <div class="split">
+              <label>
+                Korridor entlang Route
+                <select id="radiusInput" name="radius">
+                  <option value="500">500 m</option>
+                  <option value="1000">1 km</option>
+                  <option value="2000">2 km</option>
+                  <option value="5000">5 km</option>
+                  <option value="10000">10 km</option>
+                  <option value="15000">15 km</option>
+                </select>
+              </label>
+              <label>
+                Verkehrsmittel
+                <select id="routeModeInput" name="routeMode">
+                  <option value="driving">Auto</option>
+                  <option value="cycling">Fahrrad</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="split">
+              <label>
+                Prioritaet
+                <select id="priorityInput" name="priority">
+                  <option value="A">A - Direkt anrufen</option>
+                  <option value="B">B - Pruefen</option>
+                  <option value="C">C - Spaeter</option>
+                </select>
+              </label>
+              <label>
+                Max. Treffer
+                <select id="maxResultsInput" name="maxResults">
+                  <option value="25">25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                  <option value="250">250</option>
+                  <option value="500">500</option>
+                </select>
+              </label>
+            </div>
+
+            <button class="ghost-button" id="calculateRouteBtn" type="button">Route anzeigen</button>
+            <button class="primary-action" id="generateLeadsBtn" type="button">Route & Leads suchen</button>
+            <div class="nearby-search">
+              <input id="nearbyPlaceInput" autocomplete="off" placeholder="Standort oder Ort" list="nearbySuggestions">
+              <datalist id="nearbySuggestions"></datalist>
+              <button class="ghost-button" id="searchNearbyPlaceBtn" type="button">Um Ort suchen</button>
+              <button class="ghost-button" id="searchNearbyBtn" type="button">Mein Standort</button>
+            </div>
+            <p class="form-status" id="routeStatus">Bereit.</p>
+          </form>
+
+          <section class="map-panel" aria-label="Projektkarte">
+            <div class="map-toolbar">
+              <div>
+                <strong id="routeLabel">Koeln -> Koblenz</strong>
+                <span id="routeMeta">Minigolf, Camping</span>
+              </div>
+              <button class="ghost-button compact" id="fitMapBtn" type="button">Ansicht</button>
+            </div>
+            <div class="map-canvas" id="mapCanvas"></div>
+          </section>
+        </section>
+
+        <section class="lead-section">
+          <div class="lead-tools">
+            <div class="tabs" role="tablist" aria-label="Lead Status">
+              <button class="tab active" data-filter="all" type="button">Alle</button>
+              <button class="tab" data-filter="Neu" type="button">Neu</button>
+              <button class="tab" data-filter="Angesprochen" type="button">Angesprochen</button>
+              <button class="tab" data-filter="Interessiert" type="button">Interessiert</button>
+              <button class="tab" data-filter="Angebot" type="button">Angebot</button>
+              <button class="tab" data-filter="Gewonnen" type="button">Gewonnen</button>
+            </div>
+            <div class="lead-actions">
+              <select id="typeFilter" class="type-filter" aria-label="Typ filtern">
+                <option value="all">Alle Typen</option>
+              </select>
+              <input class="search-input" id="leadSearch" placeholder="Lead suchen" autocomplete="off">
+              <button class="ghost-button compact" id="manualLeadBtn" type="button">Lead manuell</button>
+            </div>
+          </div>
+
+          <div class="lead-table-wrap">
+            <table class="lead-table">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Typ</th>
+                  <th>Adresse</th>
+                  <th>Telefon</th>
+                  <th>Maps</th>
+                  <th>Webseite</th>
+                  <th>Website-Check</th>
+                  <th>Status</th>
+                  <th>Prioritaet</th>
+                  <th>Kommentar</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="leadRows"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="projectDialog">
+      <form method="dialog" class="dialog-card">
+        <h2>Projekt anlegen</h2>
+        <label>
+          Name
+          <input id="dialogName" autocomplete="off" placeholder="z. B. Rhein-Tour Camping">
+        </label>
+        <div class="split">
+          <label>
+            Start
+            <input id="dialogStart" autocomplete="off" placeholder="Koeln" list="dialogStartSuggestions">
+            <datalist id="dialogStartSuggestions"></datalist>
+          </label>
+          <label>
+            Ziel
+            <input id="dialogEnd" autocomplete="off" placeholder="Koblenz" list="dialogEndSuggestions">
+            <datalist id="dialogEndSuggestions"></datalist>
+          </label>
+        </div>
+        <menu>
+          <button value="cancel" class="ghost-button" type="submit">Abbrechen</button>
+          <button id="createProjectConfirm" value="default" class="primary-action" type="submit">Anlegen</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="manualLeadDialog">
+      <form method="dialog" class="dialog-card">
+        <h2>Lead anlegen</h2>
+        <label>
+          Name
+          <input id="manualLeadName" autocomplete="off" placeholder="z. B. Campingplatz Rheinblick">
+        </label>
+        <div class="split">
+          <label>
+            Typ
+            <input id="manualLeadType" autocomplete="off" placeholder="Camping">
+          </label>
+          <label>
+            Telefon
+            <input id="manualLeadPhone" autocomplete="off" placeholder="+49 ...">
+          </label>
+        </div>
+        <label>
+          Adresse
+          <input id="manualLeadAddress" autocomplete="off" placeholder="Strasse, PLZ Ort">
+        </label>
+        <label>
+          Webseite
+          <input id="manualLeadWebsite" autocomplete="off" placeholder="https://...">
+        </label>
+        <menu>
+          <button value="cancel" class="ghost-button" type="submit">Abbrechen</button>
+          <button id="manualLeadConfirm" value="default" class="primary-action" type="submit">Anlegen</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

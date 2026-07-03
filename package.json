@@ -1,0 +1,12 @@
+{
+  "name": "vertriebsapp",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "node local-server.mjs",
+    "check": "node --check app.js && node --check local-server.mjs && node --check api/check-website.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
