@@ -491,10 +491,10 @@ async function buildRouteAndFindLeads() {
   persist();
   render();
   if (!fresh.length) {
-    setStatus(`0 neue Leads im ${formatDistance(Number(project.radius))}-Korridor. Teste 5-10 km oder genauere Suchbegriffe wie Campingplatz, Minigolfplatz, Geschaefte.`, true);
+    setStatus(`0 neue Leads ergaenzt. ${foundLeads.length} passende Leads im ${formatDistance(Number(project.radius))}-Korridor gefunden, aber bereits in der Liste.`, true);
     return;
   }
-  setStatus(`${fresh.length} neue Leads gefunden. Route: ${formatDistance(project.route.distance)}, ca. ${formatDuration(project.route.duration)}.`);
+  setStatus(`${fresh.length} neue Leads ergaenzt (${foundLeads.length} entlang der Route gefunden). Route: ${formatDistance(project.route.distance)}, ca. ${formatDuration(project.route.duration)}.`);
 }
 
 async function searchAroundCurrentLocation() {
@@ -713,34 +713,55 @@ async function fetchLeadsAlongRoute(project, coordinates, terms) {
 }
 
 async function fetchExactLeadsAlongRoute(project, coordinates, terms, radius, maxResults) {
-  const sections = splitRouteIntoSections(coordinates, 12000);
+  const spacingMeters = Math.max(700, Math.min(1800, radius * 0.75));
+  const points = sampleRoutePointsByDistance(coordinates, spacingMeters, 140);
+  const pointBatches = chunk(points, 28);
   const seen = new Set();
   const leads = [];
-  let failedSections = 0;
+  let failedBatches = 0;
 
-  for (let sectionIndex = 0; sectionIndex < sections.length; sectionIndex += 1) {
-    setStatus(`Betriebe entlang der Route werden gesucht... Abschnitt ${sectionIndex + 1}/${sections.length}`);
-    const bbox = bufferedRouteBbox(sections[sectionIndex], radius);
-    const queries = terms.map((term) => overpassExactBboxQuery(term, bbox));
-    const body = `[out:json][timeout:12];(${queries.join("")});out tags center qt ${Math.min(Math.max(maxResults * 4, 120), 600)};`;
-    let data;
-
+  for (let batchIndex = 0; batchIndex < pointBatches.length; batchIndex += 1) {
+    setStatus(`Betriebe entlang der Route werden gesucht... Route ${batchIndex + 1}/${pointBatches.length}`);
     try {
-      data = await fetchJson("/api/overpass", {
-        serviceName: "OpenStreetMap-Lead-Suche",
-        timeoutMs: 22000,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ query: body })
+      await fetchExactRoutePointBatch({
+        project,
+        terms,
+        coordinates,
+        radius,
+        leads,
+        seen,
+        maxResults,
+        points: pointBatches[batchIndex]
       });
     } catch (error) {
       console.warn(error);
-      failedSections += 1;
+      failedBatches += 1;
       continue;
     }
+    if (leads.length >= maxResults) break;
+  }
 
+  if (!leads.length && failedBatches) {
+    throw new Error("OpenStreetMap-Lead-Suche braucht zu lange. Bitte mit kleinerem Korridor oder nur einem Suchbegriff erneut versuchen.");
+  }
+
+  return leads.sort((a, b) => a.routeDistance - b.routeDistance).slice(0, maxResults);
+}
+
+async function fetchExactRoutePointBatch({ project, terms, coordinates, radius, leads, seen, maxResults, points }) {
+  const queries = terms.map((term) => overpassRouteAroundQuery(term, points, radius));
+  const body = `[out:json][timeout:16];(${queries.join("")});out tags center qt ${Math.min(Math.max(maxResults * 5, 300), 1200)};`;
+
+  try {
+    const data = await fetchJson("/api/overpass", {
+      serviceName: "OpenStreetMap-Lead-Suche",
+      timeoutMs: 28000,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ query: body })
+    });
     addOverpassElementsToLeads(data.elements || [], {
       project,
       terms,
@@ -750,14 +771,31 @@ async function fetchExactLeadsAlongRoute(project, coordinates, terms, radius, ma
       seen,
       maxResults
     });
-    if (leads.length >= maxResults) break;
+  } catch (error) {
+    if (points.length <= 7) throw error;
+    const middle = Math.ceil(points.length / 2);
+    await fetchExactRoutePointBatch({
+      project,
+      terms,
+      coordinates,
+      radius,
+      leads,
+      seen,
+      maxResults,
+      points: points.slice(0, middle)
+    });
+    if (leads.length >= maxResults) return;
+    await fetchExactRoutePointBatch({
+      project,
+      terms,
+      coordinates,
+      radius,
+      leads,
+      seen,
+      maxResults,
+      points: points.slice(middle)
+    });
   }
-
-  if (!leads.length && failedSections) {
-    throw new Error("OpenStreetMap-Lead-Suche braucht zu lange. Bitte mit kleinerem Korridor oder nur einem Suchbegriff erneut versuchen.");
-  }
-
-  return leads.sort((a, b) => a.routeDistance - b.routeDistance).slice(0, maxResults);
 }
 
 async function fetchLeadsAroundPoint(project, lat, lon, terms) {
@@ -833,6 +871,19 @@ function overpassExactBboxQuery(term, bbox) {
   return profile.tags.map(([key, value]) => {
     const selector = value ? `["${key}"="${value}"]` : `["${key}"]`;
     return `nwr${selector}${box};`;
+  }).join("");
+}
+
+function overpassRouteAroundQuery(term, points, radius) {
+  const profile = termProfiles[normalizeSearchTerm(term)];
+  if (!profile?.tags?.length) {
+    return points.map(([lat, lon]) => overpassAroundQuery(term, lat, lon, radius)).join("");
+  }
+
+  const around = `(around:${radius},${points.map(([lat, lon]) => `${lat},${lon}`).join(",")})`;
+  return profile.tags.map(([key, value]) => {
+    const selector = value ? `["${key}"="${value}"]` : `["${key}"]`;
+    return `nwr${selector}${around};`;
   }).join("");
 }
 
@@ -1062,7 +1113,10 @@ function renderLeads() {
 }
 
 function parseTerms(value) {
-  return value.split(",").map((item) => item.trim()).filter(Boolean);
+  return value
+    .split(/,|;|\/|\+|\bund\b|\boder\b|&/i)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function classifyLead(tags, terms) {
