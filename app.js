@@ -643,12 +643,17 @@ async function fetchLeadsAlongRoute(project, coordinates, terms) {
   const maxResults = Number(project.maxResults) || 50;
   const effectiveRadius = Math.min(radius, 5000);
   const exactTypeSearch = terms.every((term) => termProfiles[normalizeSearchTerm(term)]?.tags?.length);
-  const spacingMeters = exactTypeSearch ? Math.max(1200, effectiveRadius * 1.15) : Math.max(5500, effectiveRadius * 2);
-  const maxRoutePoints = exactTypeSearch ? routePointLimit(effectiveRadius) : 18;
+
+  if (exactTypeSearch) {
+    return fetchExactLeadsAlongRoute(project, coordinates, terms, radius, maxResults);
+  }
+
+  const spacingMeters = Math.max(5500, effectiveRadius * 2);
+  const maxRoutePoints = 18;
   const points = sampleRoutePointsByDistance(coordinates, spacingMeters, maxRoutePoints);
   const seen = new Set();
   const leads = [];
-  const pointBatches = chunk(points, exactTypeSearch ? 8 : 4);
+  const pointBatches = chunk(points, 4);
   let failedBatches = 0;
 
   for (let batchIndex = 0; batchIndex < pointBatches.length; batchIndex += 1) {
@@ -704,6 +709,54 @@ async function fetchLeadsAlongRoute(project, coordinates, terms) {
   if (!leads.length && failedBatches) {
     throw new Error("OpenStreetMap-Lead-Suche braucht zu lange. Bitte mit weniger Treffern, kleinerem Korridor oder nur einem Suchbegriff erneut versuchen.");
   }
+  return leads.sort((a, b) => a.routeDistance - b.routeDistance).slice(0, maxResults);
+}
+
+async function fetchExactLeadsAlongRoute(project, coordinates, terms, radius, maxResults) {
+  const sections = splitRouteIntoSections(coordinates, 12000);
+  const seen = new Set();
+  const leads = [];
+  let failedSections = 0;
+
+  for (let sectionIndex = 0; sectionIndex < sections.length; sectionIndex += 1) {
+    setStatus(`Betriebe entlang der Route werden gesucht... Abschnitt ${sectionIndex + 1}/${sections.length}`);
+    const bbox = bufferedRouteBbox(sections[sectionIndex], radius);
+    const queries = terms.map((term) => overpassExactBboxQuery(term, bbox));
+    const body = `[out:json][timeout:12];(${queries.join("")});out tags center qt ${Math.min(Math.max(maxResults * 4, 120), 600)};`;
+    let data;
+
+    try {
+      data = await fetchJson("/api/overpass", {
+        serviceName: "OpenStreetMap-Lead-Suche",
+        timeoutMs: 22000,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ query: body })
+      });
+    } catch (error) {
+      console.warn(error);
+      failedSections += 1;
+      continue;
+    }
+
+    addOverpassElementsToLeads(data.elements || [], {
+      project,
+      terms,
+      coordinates,
+      radius,
+      leads,
+      seen,
+      maxResults
+    });
+    if (leads.length >= maxResults) break;
+  }
+
+  if (!leads.length && failedSections) {
+    throw new Error("OpenStreetMap-Lead-Suche braucht zu lange. Bitte mit kleinerem Korridor oder nur einem Suchbegriff erneut versuchen.");
+  }
+
   return leads.sort((a, b) => a.routeDistance - b.routeDistance).slice(0, maxResults);
 }
 
@@ -770,6 +823,48 @@ function overpassAroundQuery(term, lat, lon, radius) {
   ];
 
   return clauses.join("");
+}
+
+function overpassExactBboxQuery(term, bbox) {
+  const profile = termProfiles[normalizeSearchTerm(term)];
+  const box = `(${bbox.south},${bbox.west},${bbox.north},${bbox.east})`;
+  if (!profile?.tags?.length) return overpassBboxQuery(term, bbox);
+
+  return profile.tags.map(([key, value]) => {
+    const selector = value ? `["${key}"="${value}"]` : `["${key}"]`;
+    return `nwr${selector}${box};`;
+  }).join("");
+}
+
+function addOverpassElementsToLeads(elements, { project, terms, coordinates, radius, leads, seen, maxResults }) {
+  for (const element of elements) {
+    const tags = element.tags || {};
+    const name = tags.name || tags.operator;
+    if (!name) continue;
+    const lat = element.lat ?? element.center?.lat;
+    const lon = element.lon ?? element.center?.lon;
+    if (!lat || !lon) continue;
+
+    const routeDistance = distanceToRouteMeters(lat, lon, coordinates);
+    if (routeDistance > radius) continue;
+
+    const type = classifyLead(tags, terms);
+    const city = tags["addr:city"] || tags["addr:town"] || tags["addr:village"] || nearestRoutePlace(project, lat, lon);
+    const details = {
+      address: formatAddress(tags),
+      website: tags.website || tags["contact:website"] || "",
+      phone: tags.phone || tags["contact:phone"] || "",
+      routeDistance: Math.round(routeDistance),
+      score: estimateLeadScore(tags, routeDistance)
+    };
+    const item = lead(name, type, city, "Neu", project.priority, `Kontakt recherchieren - ca. ${formatDistance(routeDistance)} von Route`, lat, lon, details);
+    item.routeDistance = Math.round(routeDistance);
+    const key = uniqueLeadKey(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    leads.push(item);
+    if (leads.length >= maxResults) break;
+  }
 }
 
 async function addManualLead() {
@@ -1173,6 +1268,30 @@ function bufferedRouteBbox(coordinates, bufferMeters) {
   };
 }
 
+function splitRouteIntoSections(coordinates, sectionMeters) {
+  if (coordinates.length <= 2) return [coordinates];
+
+  const sections = [];
+  let current = [coordinates[0]];
+  let sectionDistance = 0;
+
+  for (let index = 1; index < coordinates.length; index += 1) {
+    const previous = coordinates[index - 1];
+    const point = coordinates[index];
+    sectionDistance += haversineMeters(previous[0], previous[1], point[0], point[1]);
+    current.push(point);
+
+    if (sectionDistance >= sectionMeters && current.length > 1) {
+      sections.push(current);
+      current = [point];
+      sectionDistance = 0;
+    }
+  }
+
+  if (current.length > 1) sections.push(current);
+  return sections;
+}
+
 function sampleRoutePointsByDistance(coordinates, spacingMeters, maxPoints) {
   if (!coordinates.length) return [];
   const points = [coordinates[0]];
@@ -1195,13 +1314,6 @@ function sampleRoutePointsByDistance(coordinates, spacingMeters, maxPoints) {
   if (points.length <= maxPoints) return points;
   const step = (points.length - 1) / (maxPoints - 1);
   return Array.from({ length: maxPoints }, (_, index) => points[Math.round(index * step)]);
-}
-
-function routePointLimit(radiusMeters) {
-  if (radiusMeters <= 1500) return 90;
-  if (radiusMeters <= 2500) return 75;
-  if (radiusMeters <= 5000) return 60;
-  return 45;
 }
 
 function chunk(items, size) {
