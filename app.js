@@ -642,16 +642,19 @@ async function fetchLeadsAlongRoute(project, coordinates, terms) {
   const radius = Number(project.radius) || 2000;
   const maxResults = Number(project.maxResults) || 50;
   const effectiveRadius = Math.min(radius, 5000);
-  const points = sampleRoutePointsByDistance(coordinates, Math.max(5500, effectiveRadius * 2), 18);
+  const exactTypeSearch = terms.every((term) => termProfiles[normalizeSearchTerm(term)]?.tags?.length);
+  const spacingMeters = exactTypeSearch ? Math.max(1200, effectiveRadius * 1.15) : Math.max(5500, effectiveRadius * 2);
+  const maxRoutePoints = exactTypeSearch ? routePointLimit(effectiveRadius) : 18;
+  const points = sampleRoutePointsByDistance(coordinates, spacingMeters, maxRoutePoints);
   const seen = new Set();
   const leads = [];
-  const pointBatches = chunk(points, 4);
+  const pointBatches = chunk(points, exactTypeSearch ? 8 : 4);
   let failedBatches = 0;
 
   for (let batchIndex = 0; batchIndex < pointBatches.length; batchIndex += 1) {
     setStatus(`Betriebe entlang der Route werden gesucht... ${batchIndex + 1}/${pointBatches.length}`);
     const queries = pointBatches[batchIndex].flatMap(([lat, lon]) => terms.map((term) => overpassAroundQuery(term, lat, lon, effectiveRadius)));
-    const body = `[out:json][timeout:12];(${queries.join("")});out tags center ${Math.min(maxResults * 3, 180)};`;
+    const body = `[out:json][timeout:12];(${queries.join("")});out tags center ${Math.min(maxResults * 4, 260)};`;
     let data;
     try {
       data = await fetchJson("/api/overpass", {
@@ -1192,6 +1195,13 @@ function sampleRoutePointsByDistance(coordinates, spacingMeters, maxPoints) {
   if (points.length <= maxPoints) return points;
   const step = (points.length - 1) / (maxPoints - 1);
   return Array.from({ length: maxPoints }, (_, index) => points[Math.round(index * step)]);
+}
+
+function routePointLimit(radiusMeters) {
+  if (radiusMeters <= 1500) return 90;
+  if (radiusMeters <= 2500) return 75;
+  if (radiusMeters <= 5000) return 60;
+  return 45;
 }
 
 function chunk(items, size) {
