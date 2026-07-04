@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "start": "node local-server.mjs",
-    "check": "node --check app.js && node --check local-server.mjs && node --check api/check-website.js"
+    "check": "node --check app.js && node --check local-server.mjs && node --check api/check-website.js && node --check api/overpass.js"
   },
   "engines": {
     "node": ">=20"

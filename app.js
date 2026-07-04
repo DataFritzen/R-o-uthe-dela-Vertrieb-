@@ -644,13 +644,13 @@ async function fetchLeadsAlongRoute(project, coordinates, terms) {
   const bbox = bufferedRouteBbox(coordinates, Math.max(radius, 5000));
   const queries = terms.map((term) => overpassBboxQuery(term, bbox));
   const body = `[out:json][timeout:35];(${queries.join("")});out tags center ${maxResults * 8};`;
-  const data = await fetchJson("https://overpass-api.de/api/interpreter", {
+  const data = await fetchJson("/api/overpass", {
     serviceName: "OpenStreetMap-Lead-Suche",
     method: "POST",
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+      "Content-Type": "application/json"
     },
-    body: new URLSearchParams({ data: body })
+    body: JSON.stringify({ query: body })
   });
   const seen = new Set();
   const leads = [];
@@ -689,13 +689,13 @@ async function fetchLeadsAroundPoint(project, lat, lon, terms) {
   const maxResults = Number(project.maxResults) || 50;
   const queries = terms.map((term) => overpassAroundQuery(term, lat, lon, radius));
   const body = `[out:json][timeout:35];(${queries.join("")});out tags center ${maxResults * 8};`;
-  const data = await fetchJson("https://overpass-api.de/api/interpreter", {
+  const data = await fetchJson("/api/overpass", {
     serviceName: "OpenStreetMap-Standortsuche",
     method: "POST",
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+      "Content-Type": "application/json"
     },
-    body: new URLSearchParams({ data: body })
+    body: JSON.stringify({ query: body })
   });
   const seen = new Set();
   const leads = [];

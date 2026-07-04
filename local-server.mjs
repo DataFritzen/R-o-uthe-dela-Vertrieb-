@@ -22,6 +22,11 @@ createServer(async (request, response) => {
     return;
   }
 
+  if (url.pathname === "/api/overpass") {
+    await handleOverpass(request, response);
+    return;
+  }
+
   const requested = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, "");
   let filePath = join(root, requested === "/" ? "index.html" : requested);
 
@@ -88,6 +93,59 @@ async function handleWebsiteCheck(request, response) {
       error: error.message
     });
   }
+}
+
+async function handleOverpass(request, response) {
+  if (request.method !== "POST") {
+    sendJson(response, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  try {
+    const body = await readJson(request);
+    const query = String(body.query || "").trim();
+    if (!query) {
+      sendJson(response, 400, { error: "Keine Overpass-Abfrage uebergeben." });
+      return;
+    }
+    const result = await fetchOverpass(query);
+    sendJson(response, 200, result);
+  } catch (error) {
+    sendJson(response, 502, {
+      error: error.message || "Overpass ist gerade nicht erreichbar."
+    });
+  }
+}
+
+async function fetchOverpass(query) {
+  const endpoints = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter"
+  ];
+  let lastError;
+
+  for (const endpoint of endpoints) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 18000);
+      const response = await fetch(endpoint, {
+        method: "POST",
+        signal: controller.signal,
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+          "User-Agent": "VertriebsappOverpassProxy/1.0"
+        },
+        body: new URLSearchParams({ data: query })
+      });
+      clearTimeout(timeout);
+      if (!response.ok) throw new Error(`${endpoint} HTTP ${response.status}`);
+      return await response.json();
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw new Error(lastError?.message || "Overpass ist gerade nicht erreichbar.");
 }
 
 function analyzeWebsite({ url, finalUrl, status, durationMs, html }) {

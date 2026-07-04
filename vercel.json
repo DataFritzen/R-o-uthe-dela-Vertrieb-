@@ -2,6 +2,9 @@
   "functions": {
     "api/check-website.js": {
       "maxDuration": 10
+    },
+    "api/overpass.js": {
+      "maxDuration": 25
     }
   },
   "headers": [
