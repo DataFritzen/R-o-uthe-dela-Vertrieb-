@@ -641,47 +641,66 @@ async function fetchRoute(places, mode) {
 async function fetchLeadsAlongRoute(project, coordinates, terms) {
   const radius = Number(project.radius) || 2000;
   const maxResults = Number(project.maxResults) || 50;
-  const points = sampleRoutePointsByDistance(coordinates, Math.max(3500, radius * 1.8), 28);
-  const queries = points.flatMap(([lat, lon]) => terms.map((term) => overpassAroundQuery(term, lat, lon, radius)));
-  const body = `[out:json][timeout:20];(${queries.join("")});out tags center ${Math.min(maxResults * 5, 600)};`;
-  const data = await fetchJson("/api/overpass", {
-    serviceName: "OpenStreetMap-Lead-Suche",
-    timeoutMs: 30000,
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ query: body })
-  });
+  const effectiveRadius = Math.min(radius, 5000);
+  const points = sampleRoutePointsByDistance(coordinates, Math.max(4500, effectiveRadius * 1.7), 22);
   const seen = new Set();
   const leads = [];
+  const pointBatches = chunk(points, 5);
+  let failedBatches = 0;
 
-  for (const element of data.elements || []) {
-    const tags = element.tags || {};
-    const name = tags.name || tags.operator;
-    if (!name) continue;
-    const lat = element.lat ?? element.center?.lat;
-    const lon = element.lon ?? element.center?.lon;
-    if (!lat || !lon) continue;
-    const routeDistance = distanceToRouteMeters(lat, lon, coordinates);
-    if (routeDistance > radius) continue;
-    const type = classifyLead(tags, terms);
-    const city = tags["addr:city"] || tags["addr:town"] || tags["addr:village"] || nearestRoutePlace(project, lat, lon);
-    const details = {
-      address: formatAddress(tags),
-      website: tags.website || tags["contact:website"] || "",
-      phone: tags.phone || tags["contact:phone"] || "",
-      routeDistance: Math.round(routeDistance),
-      score: estimateLeadScore(tags, routeDistance)
-    };
-    const item = lead(name, type, city, "Neu", project.priority, `Kontakt recherchieren - ca. ${formatDistance(routeDistance)} von Route`, lat, lon, details);
-    item.routeDistance = Math.round(routeDistance);
-    const key = uniqueLeadKey(item);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    leads.push(item);
+  for (let batchIndex = 0; batchIndex < pointBatches.length; batchIndex += 1) {
+    setStatus(`Betriebe entlang der Route werden gesucht... ${batchIndex + 1}/${pointBatches.length}`);
+    const queries = pointBatches[batchIndex].flatMap(([lat, lon]) => terms.map((term) => overpassAroundQuery(term, lat, lon, effectiveRadius)));
+    const body = `[out:json][timeout:12];(${queries.join("")});out tags center ${Math.min(maxResults * 3, 180)};`;
+    let data;
+    try {
+      data = await fetchJson("/api/overpass", {
+        serviceName: "OpenStreetMap-Lead-Suche",
+        timeoutMs: 22000,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ query: body })
+      });
+    } catch (error) {
+      console.warn(error);
+      failedBatches += 1;
+      continue;
+    }
+
+    for (const element of data.elements || []) {
+      const tags = element.tags || {};
+      const name = tags.name || tags.operator;
+      if (!name) continue;
+      const lat = element.lat ?? element.center?.lat;
+      const lon = element.lon ?? element.center?.lon;
+      if (!lat || !lon) continue;
+      const routeDistance = distanceToRouteMeters(lat, lon, coordinates);
+      if (routeDistance > radius) continue;
+      const type = classifyLead(tags, terms);
+      const city = tags["addr:city"] || tags["addr:town"] || tags["addr:village"] || nearestRoutePlace(project, lat, lon);
+      const details = {
+        address: formatAddress(tags),
+        website: tags.website || tags["contact:website"] || "",
+        phone: tags.phone || tags["contact:phone"] || "",
+        routeDistance: Math.round(routeDistance),
+        score: estimateLeadScore(tags, routeDistance)
+      };
+      const item = lead(name, type, city, "Neu", project.priority, `Kontakt recherchieren - ca. ${formatDistance(routeDistance)} von Route`, lat, lon, details);
+      item.routeDistance = Math.round(routeDistance);
+      const key = uniqueLeadKey(item);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      leads.push(item);
+      if (leads.length >= maxResults) break;
+    }
+    if (leads.length >= maxResults) break;
   }
 
+  if (!leads.length && failedBatches) {
+    throw new Error("OpenStreetMap-Lead-Suche braucht zu lange. Bitte mit weniger Treffern, kleinerem Korridor oder nur einem Suchbegriff erneut versuchen.");
+  }
   return leads.sort((a, b) => a.routeDistance - b.routeDistance).slice(0, maxResults);
 }
 
@@ -1177,6 +1196,14 @@ function sampleRoutePointsByDistance(coordinates, spacingMeters, maxPoints) {
   if (points.length <= maxPoints) return points;
   const step = (points.length - 1) / (maxPoints - 1);
   return Array.from({ length: maxPoints }, (_, index) => points[Math.round(index * step)]);
+}
+
+function chunk(items, size) {
+  const groups = [];
+  for (let index = 0; index < items.length; index += size) {
+    groups.push(items.slice(index, index + size));
+  }
+  return groups;
 }
 
 function distanceToRouteMeters(lat, lon, coordinates) {
