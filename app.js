@@ -642,10 +642,10 @@ async function fetchLeadsAlongRoute(project, coordinates, terms) {
   const radius = Number(project.radius) || 2000;
   const maxResults = Number(project.maxResults) || 50;
   const effectiveRadius = Math.min(radius, 5000);
-  const points = sampleRoutePointsByDistance(coordinates, Math.max(4500, effectiveRadius * 1.7), 22);
+  const points = sampleRoutePointsByDistance(coordinates, Math.max(5500, effectiveRadius * 2), 18);
   const seen = new Set();
   const leads = [];
-  const pointBatches = chunk(points, 5);
+  const pointBatches = chunk(points, 4);
   let failedBatches = 0;
 
   for (let batchIndex = 0; batchIndex < pointBatches.length; batchIndex += 1) {
@@ -751,24 +751,20 @@ function overpassAroundQuery(term, lat, lon, radius) {
   const profile = termProfiles[normalizeSearchTerm(term)];
   const safeTerm = (profile?.name || term).replace(/[\\"]/g, "");
   const around = `(around:${radius},${lat},${lon})`;
-  const clauses = [
-    `node["name"~"${safeTerm}",i]${around};`,
-    `way["name"~"${safeTerm}",i]${around};`,
-    `relation["name"~"${safeTerm}",i]${around};`,
-    `node["tourism"~"${safeTerm}",i]${around};`,
-    `way["tourism"~"${safeTerm}",i]${around};`,
-    `relation["tourism"~"${safeTerm}",i]${around};`,
-    `node["leisure"~"${safeTerm}",i]${around};`,
-    `way["leisure"~"${safeTerm}",i]${around};`,
-    `relation["leisure"~"${safeTerm}",i]${around};`
-  ];
+  if (profile?.tags?.length) {
+    return profile.tags.map(([key, value]) => {
+      const selector = value ? `["${key}"="${value}"]` : `["${key}"]`;
+      return `nwr${selector}${around};`;
+    }).join("");
+  }
 
-  profile?.tags.forEach(([key, value]) => {
-    const selector = value ? `["${key}"="${value}"]` : `["${key}"]`;
-    clauses.push(`node${selector}${around};`);
-    clauses.push(`way${selector}${around};`);
-    clauses.push(`relation${selector}${around};`);
-  });
+  const clauses = [
+    `nwr["name"~"${safeTerm}",i]${around};`,
+    `nwr["tourism"~"${safeTerm}",i]${around};`,
+    `nwr["leisure"~"${safeTerm}",i]${around};`,
+    `nwr["amenity"~"${safeTerm}",i]${around};`,
+    `nwr["shop"~"${safeTerm}",i]${around};`
+  ];
 
   return clauses.join("");
 }
