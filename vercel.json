@@ -4,7 +4,7 @@
       "maxDuration": 10
     },
     "api/overpass.js": {
-      "maxDuration": 25
+      "maxDuration": 30
     }
   },
   "headers": [

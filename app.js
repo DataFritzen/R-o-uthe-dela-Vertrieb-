@@ -641,11 +641,12 @@ async function fetchRoute(places, mode) {
 async function fetchLeadsAlongRoute(project, coordinates, terms) {
   const radius = Number(project.radius) || 2000;
   const maxResults = Number(project.maxResults) || 50;
-  const bbox = bufferedRouteBbox(coordinates, Math.max(radius, 5000));
-  const queries = terms.map((term) => overpassBboxQuery(term, bbox));
-  const body = `[out:json][timeout:35];(${queries.join("")});out tags center ${maxResults * 8};`;
+  const points = sampleRoutePointsByDistance(coordinates, Math.max(3500, radius * 1.8), 28);
+  const queries = points.flatMap(([lat, lon]) => terms.map((term) => overpassAroundQuery(term, lat, lon, radius)));
+  const body = `[out:json][timeout:20];(${queries.join("")});out tags center ${Math.min(maxResults * 5, 600)};`;
   const data = await fetchJson("/api/overpass", {
     serviceName: "OpenStreetMap-Lead-Suche",
+    timeoutMs: 30000,
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -1152,6 +1153,30 @@ function bufferedRouteBbox(coordinates, bufferMeters) {
     north: Math.max(...lats) + latBuffer,
     east: Math.max(...lons) + lonBuffer
   };
+}
+
+function sampleRoutePointsByDistance(coordinates, spacingMeters, maxPoints) {
+  if (!coordinates.length) return [];
+  const points = [coordinates[0]];
+  let distanceSinceLast = 0;
+
+  for (let index = 1; index < coordinates.length; index += 1) {
+    const previous = coordinates[index - 1];
+    const current = coordinates[index];
+    distanceSinceLast += haversineMeters(previous[0], previous[1], current[0], current[1]);
+    if (distanceSinceLast >= spacingMeters) {
+      points.push(current);
+      distanceSinceLast = 0;
+    }
+  }
+
+  const last = coordinates[coordinates.length - 1];
+  const alreadyHasLast = points[points.length - 1]?.[0] === last[0] && points[points.length - 1]?.[1] === last[1];
+  if (!alreadyHasLast) points.push(last);
+
+  if (points.length <= maxPoints) return points;
+  const step = (points.length - 1) / (maxPoints - 1);
+  return Array.from({ length: maxPoints }, (_, index) => points[Math.round(index * step)]);
 }
 
 function distanceToRouteMeters(lat, lon, coordinates) {

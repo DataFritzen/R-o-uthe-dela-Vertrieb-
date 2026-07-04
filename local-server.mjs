@@ -127,7 +127,7 @@ async function fetchOverpass(query) {
   for (const endpoint of endpoints) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 18000);
+      const timeout = setTimeout(() => controller.abort(), 25000);
       const response = await fetch(endpoint, {
         method: "POST",
         signal: controller.signal,
